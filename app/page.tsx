@@ -1,5 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
+import Timer from "./Timer";
+
 export default function Home() {
   return (
     <div >
@@ -18,7 +20,7 @@ export default function Home() {
 
       {/* Timer */}
       <div className="h-screen bg-[#4A70A9]">
-        Timer area
+        <Timer/>
       </div>
     </div>
   );
