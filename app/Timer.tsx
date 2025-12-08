@@ -1,7 +1,9 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { generateScramble } from 'react-rubiks-cube-utils';
+import { generateScramble, DisplayCube, applyScramble, Cube } from 'react-rubiks-cube-utils';
+import Cube2d from '../utils/Cube2d'
+
 
 // --- Types ---
 type TimerState = 'idle' | 'ready' | 'running';
@@ -243,6 +245,7 @@ export default function Timer() {
 
     const stats = calculateStats(solves);
     const selectedSolve = solves.find(s => s.id === selectedSolveId);
+    let cube = applyScramble({ type: cubetype, scramble: scramble });
 
     return (
         <div className="bg-[#4A70A9] min-h-screen text-white font-sans relative">
@@ -324,7 +327,7 @@ export default function Timer() {
             </div>
 
             {/* --- SCRAMBLE --- */}
-            <div className="py-6 text-center text-xl md:text-2xl font-mono px-4 break-words leading-relaxed min-h-[100px] flex items-center justify-center">
+            <div className="py-6 text-center text-xl md:text-2xl font-mono px-4 wrap-break-word leading-relaxed min-h-[100px] flex items-center justify-center">
                 {isLoaded ? scramble : "Loading..."}
             </div>
 
@@ -354,13 +357,13 @@ export default function Timer() {
                         {formatTime(timeDisplay)}
                     </div>
                     <div className="text-white/50 mt-4 text-lg">
-                        {timerState === 'idle' && "Hold Space to Start"}
-                        {timerState === 'ready' && "Release to Start"}
-                        {timerState === 'running' && "Press Space to Stop"}
+                        {timerState === 'idle' && ""}
+                        {timerState === 'ready' && ""}
+                        {timerState === 'running' && ""}
                     </div>
                 </div>
 
-                {/* RIGHT: Stats */}
+                {/* RIGHT: Stats and Cube display */}
                 <div className="basis-1/6 overflow-y-auto bg-[#3b5d8f]/50 p-4 text-sm font-mono">
                     <h3 className="text-center font-bold mb-4 border-b border-white/20 pb-2">Session Stats</h3>
                     
@@ -383,9 +386,19 @@ export default function Timer() {
                             Reset Session
                         </button>
                     </div>
+
+                    {/* Cube Display */}
+                    <div className='my-8 bg-white'>
+                        <Cube2d cube={cube}  />
+                    </div>
+                </div>
+
+                <div>
+
                 </div>
 
             </div>
+
         </div>
     )
 }
