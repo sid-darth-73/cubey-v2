@@ -88,15 +88,9 @@ export default function Timer() {
     const timerStateRef = useRef<TimerState>('idle');
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
     const startTimeRef = useRef<number>(0);
-
-    // : Create a ref to track solves without triggering re-renders in the event listener
     const solvesRef = useRef(solves);
 
-    // : Keep the ref synced with the state
-    useEffect(() => {
-        solvesRef.current = solves;
-    }, [solves]);
-
+    useEffect(() => { solvesRef.current = solves; }, [solves]);
     useEffect(() => { timerStateRef.current = timerState; }, [timerState]);
 
     // --- 1. Load Data ---
@@ -171,25 +165,25 @@ export default function Timer() {
     // --- Keyboard Inputs ---
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            // Disable inputs if modal is open
             if(selectedSolveId) return; 
 
-            // 1. Spacebar Logic (Timer)
             if (e.code === "Space") {
                 if(timerStateRef.current !== 'running') e.preventDefault(); 
                 if (timerStateRef.current === 'running') stopTimer();
                 else if (timerStateRef.current === 'idle') readyTimer();
             }
+            
+            const alpha = ['w','x','c','v','b','n','m','a','s','d','f','g','h','j','k','l'];
+            if (alpha.includes(e.key.toLowerCase())) {
+                if (timerStateRef.current === 'running') stopTimer();
+            }
 
-            // 2. SHORTCUT: Option/Alt + Z to delete last solve
             if (e.altKey && (e.code === "KeyZ" || e.key === 'z')) {
                 e.preventDefault();
-                // Only allow deletion if timer is idle and there are solves
                 if (timerStateRef.current === 'idle' && solves.length > 0) {
                     const lastSolve = solves[solves.length - 1];
-                    // Simple confirmation
                     if (confirm(`Delete last solve (${formatTime(lastSolve.time, lastSolve.penalty)})?`)) {
-                        setSolves(prev => prev.slice(0, -1)); // Remove the last item
+                        setSolves(prev => prev.slice(0, -1));
                     }
                 }
             }
@@ -197,7 +191,6 @@ export default function Timer() {
 
         const handleKeyUp = (e: KeyboardEvent) => {
             if(selectedSolveId) return;
-
             if (e.code === "Space") {
                 if (timerStateRef.current === 'ready') startTimer();
                 else if (timerStateRef.current === 'idle') setTimerState('idle');
@@ -210,8 +203,26 @@ export default function Timer() {
             window.removeEventListener("keydown", handleKeyDown);
             window.removeEventListener("keyup", handleKeyUp);
         };
-    }, [readyTimer, startTimer, stopTimer, selectedSolveId, solves]); // Added 'solves' to dependency array
+    }, [readyTimer, startTimer, stopTimer, selectedSolveId, solves]);
 
+    const handlePointerDown = useCallback((e: React.PointerEvent) => {
+        if (selectedSolveId) return;
+        if (e.pointerType !== 'touch') return;
+
+        // Prevent scrolling while holding timer
+        if (timerStateRef.current !== 'running') e.preventDefault();
+        
+        if (timerStateRef.current === 'running') stopTimer();
+        else if (timerStateRef.current === 'idle') readyTimer();
+    }, [selectedSolveId, readyTimer, stopTimer]);
+
+    const handlePointerUp = useCallback((e: React.PointerEvent) => {
+        if (selectedSolveId) return;
+        if (e.pointerType !== 'touch') return;
+
+        if (timerStateRef.current === 'ready') startTimer();
+        else if (timerStateRef.current === 'idle') setTimerState('idle');
+    }, [selectedSolveId, startTimer]);
 
     // --- Solve Management ---
     const updateSolve = (id: string, updates: Partial<Solve>) => {
@@ -229,159 +240,169 @@ export default function Timer() {
     const selectedSolve = solves.find(s => s.id === selectedSolveId);
     let cube = applyScramble({ type: cubetype, scramble: scramble });
 
+    // CSS class to dim UI when timer is active
+    const dimUI = timerState === 'ready' || timerState === 'running' ? ' pointer-events-none' : '';
+
     return (
         <div className="bg-blue-950 h-screen flex flex-col text-white font-sans relative overflow-hidden">
             
-            {/* --- DETAILS MODAL --- */}
+            {/* --- DETAILS MODAL (Adjusted for mobile centering) --- */}
             {selectedSolveId && selectedSolve && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-[#2d4870] border border-white/20 p-6 rounded-lg w-full max-w-md shadow-2xl">
-                        <h2 className="text-2xl font-mono font-bold text-center mb-4">
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                    <div className="bg-[#2d4870] border border-white/20 p-6 rounded-lg w-full max-w-md shadow-2xl flex flex-col gap-4">
+                        <h2 className="text-4xl font-mono font-bold text-center">
                             {formatTime(selectedSolve.time, selectedSolve.penalty)}
                         </h2>
                         
-                        <div className="flex justify-center gap-4 mb-6">
+                        <div className="flex justify-center gap-4">
                             <button 
                                 onClick={() => updateSolve(selectedSolve.id, { penalty: selectedSolve.penalty === '+2' ? '' : '+2' })}
-                                className={`px-4 py-2 rounded border ${selectedSolve.penalty === '+2' ? 'bg-yellow-600 border-yellow-400' : 'border-white/20 hover:bg-white/10'}`}
+                                className={`flex-1 py-3 rounded border text-lg font-bold ${selectedSolve.penalty === '+2' ? 'bg-yellow-600 border-yellow-400' : 'border-white/20 hover:bg-white/10'}`}
                             >
                                 +2
                             </button>
                             <button 
                                 onClick={() => updateSolve(selectedSolve.id, { penalty: selectedSolve.penalty === 'DNF' ? '' : 'DNF' })}
-                                className={`px-4 py-2 rounded border ${selectedSolve.penalty === 'DNF' ? 'bg-red-600 border-red-400' : 'border-white/20 hover:bg-white/10'}`}
+                                className={`flex-1 py-3 rounded border text-lg font-bold ${selectedSolve.penalty === 'DNF' ? 'bg-red-600 border-red-400' : 'border-white/20 hover:bg-white/10'}`}
                             >
                                 DNF
                             </button>
                             <button 
                                 onClick={() => deleteSolve(selectedSolve.id)}
-                                className="px-4 py-2 rounded border border-red-500 text-red-300 hover:bg-red-500/20"
+                                className="flex-1 py-3 rounded border border-red-500 text-red-300 hover:bg-red-500/20"
                             >
-                                Delete
+                                Del
                             </button>
                         </div>
 
-                        <div className="mb-4">
-                            <label className="block text-sm text-white/60 mb-1">Comment / Scramble</label>
+                        <div>
+                            <label className="block text-sm text-white/60 mb-1">Comment</label>
                             <textarea 
-                                className="w-full bg-[#1e3454] border border-white/20 rounded p-2 text-sm font-mono h-24"
+                                className="w-full bg-[#1e3454] border border-white/20 rounded p-2 text-sm font-mono h-20"
                                 value={selectedSolve.comment}
                                 onChange={(e) => updateSolve(selectedSolve.id, { comment: e.target.value })}
                             />
                         </div>
 
-                        <div className="text-center">
-                            <button 
-                                onClick={() => setSelectedSolveId(null)}
-                                className="bg-white/20 hover:bg-white/30 px-6 py-2 rounded"
-                            >
-                                Close
-                            </button>
-                        </div>
+                        <button 
+                            onClick={() => setSelectedSolveId(null)}
+                            className="bg-white/20 hover:bg-white/30 py-3 rounded text-lg"
+                        >
+                            Close
+                        </button>
                     </div>
                 </div>
             )}
 
-
             {/* --- HEADER --- */}
-            <div className="shrink-0 border-b border-white/20 py-1 flex items-center bg-[#3b5d8f]">
-                <div className="basis-1/5 px-4">
-                    <span className="mr-2 font-bold hidden md:inline">Type:</span>
+            <div className={`shrink-0 border-b border-white/20 py-2 flex items-center justify-between bg-[#3b5d8f] transition-opacity duration-200 ${dimUI}`}>
+                <div className="flex-1 px-2">
                     <select 
-                        className="bg-[#2d4870] border border-white/30 px-2 py-1 rounded text-white outline-none w-full md:w-auto" 
+                        className="bg-[#2d4870] border border-white/30 px-4 py-1 rounded text-white outline-none  text-center" 
                         value={cubetype} 
                         onChange={(e) => setCubetype(e.target.value)}
                     >
                         {['3x3','2x2','4x4','5x5','6x6','7x7'].map(t => <option key={t} value={t}>{t}</option>)}
                     </select>
                 </div>
-                <div className="basis-4/5 px-4">
-                    <span className="mr-2 font-bold hidden md:inline">Session:</span>
+                <div className="flex-1 px-2">
                     <select 
-                        className="bg-[#2d4870] border border-white/30 px-2 py-1 rounded text-white outline-none w-full md:w-auto" 
+                        className="bg-[#2d4870] border border-white/30 px-4 py-1 rounded text-white outline-none text-center" 
                         value={session} 
                         onChange={(e) => setSession(e.target.value)}
                     >
-                        {Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}
+                        {Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>Session {i + 1}</option>)}
                     </select>
                 </div>
             </div>
 
             {/* --- SCRAMBLE --- */}
-            <div className="shrink-0 py-6 text-center font-mono px-4 wrap-break-word leading-relaxed min-h-[100px] flex items-center justify-center">
-                <div className='mx-4 text-xl md:text-3xl'> {isLoaded ? scramble : "Loading..."} </div>
+            <div className={`shrink-0 py-4 text-center px-4 leading-relaxed flex flex-col items-center justify-center transition-opacity duration-200 ${dimUI}`}>
+                <div className='flex items-center'> 
+                    <div className='font-mono mx-2 text-xl md:text-3xl min-h-12'>{isLoaded ? scramble : "Loading..."} </div>
+                    <div className="flex gap-2 mt-2 ">
+                        <button className='text-gray-400 hover:text-white px-4 py-2 bg-white/5 rounded cursor-pointer' onClick={()=>{
+                            if (prevscramble.length > 0){
+                                setScramble(curr => prevscramble)
+                                setPrevscramble(curr => "")
+                            }
+                        }}>Prev</button>
+                        
+                        <button className='text-gray-400 hover:text-white px-4 py-2 bg-white/5 rounded cursor-pointer' onClick={()=>{
+                            setPrevscramble(curr => scramble)
+                            setScramble(generateScramble({ type: cubetype }))
+                        }}>Next</button>
+                    </div>
+                    
+                </div>
 
-                <span className='text-gray-400 cursor-pointer' onClick={()=>{
-                    if (prevscramble.length > 0){
-                        setScramble(curr => prevscramble)
-                        setPrevscramble(curr => "")
-                    }
-                }}>prev/ </span>
-                <span className='text-gray-400 cursor-pointer' onClick={()=>{
-                    setPrevscramble(curr => scramble)
-                    setScramble(generateScramble({ type: cubetype }))
-                }}>next</span>
+                
             </div>
 
-            {/* --- CONTENT --- */}
-            <div className="flex-1 flex flex-row min-h-0 border-t border-white/20">
+            {/* --- CONTENT (Layout: Vertical on Mobile, Row on Desktop) --- */}
+            <div className="flex-1 flex flex-col md:flex-row min-h-0 border-t border-white/20 overflow-y-auto md:overflow-hidden">
                 
-                {/* LEFT: Clickable Time List */}
-                <div className="basis-1/6 border-r border-white/20 overflow-y-auto bg-[#3b5d8f]/50 text-sm">
-                    <div className="p-2 text-center font-bold bg-[#2d4870] sticky top-0 z-10">Solves</div>
-                    <div className="flex flex-col-reverse p-2">
+                {/* MIDDLE: Timer (Moved to top for mobile, middle for desktop) */}
+                {/* order-1 puts it first on mobile */}
+                <div
+                    className="order-1 md:order-2 grow md:basis-4/6 border-b md:border-b-0 md:border-r border-white/20 flex flex-col justify-center items-center relative overflow-hidden min-h-[50vh] md:min-h-auto"
+                    onPointerDown={handlePointerDown}
+                    onPointerUp={handlePointerUp}
+                    onPointerCancel={handlePointerUp}
+                    style={{ touchAction: 'none' }} // Prevents browser zoom/scroll while touching
+                >
+                    <div className={`text-7xl md:text-[120px] font-mono font-bold select-none tabular-nums ${timerState === 'ready' ? 'text-green-400' : 'text-white'}`}>
+                        {formatTime(timeDisplay)}
+                    </div>
+                   
+                </div>
+
+                {/* LEFT: Solves List (Moved below timer on mobile) */}
+                <div className={`order-2 md:order-1 h-64 md:h-auto md:basis-1/6 border-b md:border-b-0 md:border-r border-white/20 overflow-y-auto bg-[#3b5d8f]/50 text-sm transition-opacity duration-200 ${dimUI}`}>
+                    <div className="p-2 text-center font-bold bg-[#2d4870] sticky top-0 z-10">Solves ({solves.length})</div>
+                    <div className="flex flex-col-reverse p-2 gap-1">
                         {solves.map((s, i) => (
                             <div 
                                 key={s.id} 
                                 onClick={() => setSelectedSolveId(s.id)}
-                                className={`flex justify-between px-1 md:px-2 py-1 hover:bg-white/20 rounded cursor-pointer ${s.penalty === 'DNF' ? 'text-red-300' : ''}`}
+                                className={`flex justify-between px-3 py-2 md:py-1 hover:bg-white/20 rounded cursor-pointer ${s.penalty === 'DNF' ? 'text-red-300' : ''}`}
                             >
-                                <span className="text-white/60 w-6 md:w-8">{i + 1}.</span>
-                                <span className="font-mono">{formatTime(s.time, s.penalty)}</span>
+                                <span className="text-white/60 w-8">{i + 1}.</span>
+                                <span className="font-mono text-base md:text-sm">{formatTime(s.time, s.penalty)}</span>
                             </div>
                         ))}
                     </div>
                 </div>
 
-                {/* MIDDLE: Timer Display */}
-                <div className="basis-4/6 border-r border-white/20 flex flex-col justify-center items-center relative overflow-hidden">
-                    <div className={`text-6xl md:text-[120px] font-mono font-bold select-none tabular-nums ${timerState === 'ready' ? 'text-green-400' : 'text-white'}`}>
-                        {formatTime(timeDisplay)}
-                    </div>
-                    <div className="text-white/50 mt-4 text-lg">
-                        {timerState === 'idle' && ""}
-                        {timerState === 'ready' && ""}
-                        {timerState === 'running' && ""}
-                    </div>
-                </div>
-
                 {/* RIGHT: Stats and Cube display */}
-                <div className="basis-1/6 overflow-y-auto bg-[#3b5d8f]/50 p-2 md:p-4 text-xs md:text-sm font-mono">
+                <div className={`order-3 h-auto md:h-auto md:basis-1/6 overflow-y-auto bg-[#3b5d8f]/50 p-4 text-sm font-mono transition-opacity duration-200 ${dimUI}`}>
                     <h3 className="text-center font-bold mb-4 border-b border-white/20 pb-2">Stats</h3>
                     
-                    <StatRow label="Best" value={stats.best} />
                     <StatRow label="Ao5" value={stats.ao5} />
                     <StatRow label="Ao12" value={stats.ao12} />
                     <StatRow label="Ao50" value={stats.ao50} />
                     <StatRow label="Ao100" value={stats.ao100} />
+                    <StatRow label="Best" value={stats.best} />
                     
                     <div className="my-4 border-t border-white/20"></div>
                     
                     <StatRow label="Mean" value={stats.mean} />
                     <StatRow label="SD" value={stats.stdDev} />
                     
-                    <div className="mt-8 text-center">
+                    <div className="mt-8 text-center pb-8 md:pb-0 ">
                         <button 
                             onClick={() => { if(confirm("Clear this session?")) setSolves([]); }}
-                            className="bg-red-500/80 hover:bg-red-600 text-white px-2 py-1 rounded text-[10px] md:text-xs transition"
+                            className="bg-red-500/80 hover:bg-red-600 text-white px-4 py-2 rounded text-xs uppercase tracking-widest transition cursor-pointer"
                         >
-                            Reset
+                            Reset Session
                         </button>
                     </div>
 
-                    <div className='my-8 bg-white hidden md:block'>
-                        <button className='text-gray-400 text-center w-full' onClick={()=>{ setCheckState((prev)=> !prev) }}>State</button>
-                        {checkState && <Cube2d cube={cube}  />}
+                    <div className='my-8 bg-white/10 rounded p-2 hidden md:block'>
+                        <button className='text-white/50 hover:text-white text-center w-full text-xs cursor-pointer' onClick={()=>{ setCheckState((prev)=> !prev) }}>
+                            {checkState ? "Hide Cube State" : "Show Cube State"}
+                        </button>
+                        {checkState && <div className="mt-2"><Cube2d cube={cube}  /></div>}
                     </div>
                 </div>
 
@@ -394,9 +415,9 @@ export default function Timer() {
 function StatRow({ label, value }: { label: string, value: number }) {
     if (value === 0 && label !== "Best") return null; 
     return (
-        <div className="flex flex-col xl:flex-row justify-between mb-2">
-            <span className="text-white/70">{label}:</span>
-            <span className="font-bold">{value === 0 && label === 'Best' ? '-' : formatTime(value)}</span>
+        <div className="flex justify-between mb-2 items-end">
+            <span className="text-white/70 text-xs uppercase tracking-wide">{label}:</span>
+            <span className="font-bold text-lg md:text-base">{value === 0 && label === 'Best' ? '-' : formatTime(value)}</span>
         </div>
     );
 }
