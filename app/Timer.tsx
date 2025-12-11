@@ -401,6 +401,8 @@ export default function Timer() {
                     `}>
                         {formatTime(timeDisplay)}
                     </div>
+                    <div>Ao5: {stats.ao5 == 0 ? "" : formatTime(stats.ao5)}</div>
+                    <div>Ao12: {stats.ao12 == 0 ? "" : formatTime(stats.ao12)}</div>
                 </div>
 
                 {/* RIGHT: STATS */}
