@@ -1,9 +1,8 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { generateScramble, DisplayCube, applyScramble, Cube } from 'react-rubiks-cube-utils';
+import { generateScramble, applyScramble } from 'react-rubiks-cube-utils';
 import Cube2d from '../utils/Cube2d'
-
 
 // --- Types ---
 type TimerState = 'idle' | 'ready' | 'running';
@@ -11,7 +10,7 @@ type Penalty = '' | '+2' | 'DNF';
 
 interface Solve {
     id: string;
-    time: number;       // Raw timer value in ms
+    time: number;
     penalty: Penalty;
     scramble: string;
     comment: string;
@@ -21,8 +20,6 @@ interface Solve {
 // --- Helper: Format ms to mm:ss.cc ---
 const formatTime = (ms: number, penalty: Penalty = '') => {
     if (penalty === 'DNF') return 'DNF';
-    
-    // If +2, we visually show the added time
     const finalTime = penalty === '+2' ? ms + 2000 : ms;
 
     const s = Math.floor(finalTime / 1000);
@@ -37,9 +34,8 @@ const formatTime = (ms: number, penalty: Penalty = '') => {
     return penalty === '+2' ? `${timeString}+` : timeString;
 };
 
-// --- Helper: Calculate Statistics (WCA Style) ---
+// --- Helper: Calculate Statistics ---
 const calculateStats = (solves: Solve[]) => {
-    // Filter out solves to get effective times
     const validSolves = solves.map(s => {
         if (s.penalty === 'DNF') return Infinity;
         if (s.penalty === '+2') return s.time + 2000;
@@ -47,65 +43,39 @@ const calculateStats = (solves: Solve[]) => {
     });
 
     const nonDnfSolves = validSolves.filter(t => t !== Infinity);
-    
-    // Best Solve (Single)
     const best = nonDnfSolves.length > 0 ? Math.min(...nonDnfSolves) : 0;
 
-    // Helper for Averages
     const getAvg = (n: number) => {
         if (validSolves.length < n) return 0;
-        
-        // Take last n solves
         const subset = validSolves.slice(-n);
-        
-        // Count DNFs
         const dnfCount = subset.filter(t => t === Infinity).length;
+        if (dnfCount > 1) return 0;
         
-        // WCA Logic: 
-        // For Ao5: >1 DNF = DNF. 
-        // For Ao12: >1 DNF = DNF. (Technically WCA allows 1 DNF to be dropped)
-        if (dnfCount > 1) return 0; // Return 0 to signify DNF in UI for simplicity, or handle logic
-        
-        // Sort
         subset.sort((a, b) => a - b);
-        
-        // Remove best and worst
-        // If 1 DNF, it is 'Infinity', so it's at the end (worst). It gets removed.
         const trimmed = subset.slice(1, -1);
-        
         const sum = trimmed.reduce((a, b) => a + b, 0);
         return sum / trimmed.length;
     };
 
-    // Mean (All non-DNFs)
     const sum = nonDnfSolves.reduce((a, b) => a + b, 0);
     const mean = nonDnfSolves.length > 0 ? sum / nonDnfSolves.length : 0;
-
-    // Standard Deviation
     const variance = nonDnfSolves.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / nonDnfSolves.length;
     const stdDev = Math.sqrt(variance || 0);
 
-    return {
-        best,
-        mean,
-        stdDev,
-        ao5: getAvg(5),
-        ao12: getAvg(12),
-        ao50: getAvg(50),
-        ao100: getAvg(100)
-    };
+    return { best, mean, stdDev, ao5: getAvg(5), ao12: getAvg(12), ao50: getAvg(50), ao100: getAvg(100) };
 };
-
 
 export default function Timer() {
     // --- Settings State ---
     const [cubetype, setCubetype] = useState<string>("3x3");
     const [session, setSession] = useState<string>("1");
     const [scramble, setScramble] = useState<string>("");
+    const [prevscramble, setPrevscramble] = useState<string>("");
     
     // --- Timer Logic State ---
     const [timerState, setTimerState] = useState<TimerState>('idle');
     const [timeDisplay, setTimeDisplay] = useState<number>(0);
+    const [checkState, setCheckState] = useState<boolean>(false);
     
     // --- Data State ---
     const [solves, setSolves] = useState<Solve[]>([]);
@@ -118,6 +88,14 @@ export default function Timer() {
     const timerStateRef = useRef<TimerState>('idle');
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
     const startTimeRef = useRef<number>(0);
+
+    // : Create a ref to track solves without triggering re-renders in the event listener
+    const solvesRef = useRef(solves);
+
+    // : Keep the ref synced with the state
+    useEffect(() => {
+        solvesRef.current = solves;
+    }, [solves]);
 
     useEffect(() => { timerStateRef.current = timerState; }, [timerState]);
 
@@ -133,24 +111,15 @@ export default function Timer() {
     // --- 2. Sync Session Data ---
     useEffect(() => {
         if (!isLoaded) return;
-        
         localStorage.setItem("cubetype", cubetype);
         localStorage.setItem("session", session);
         setScramble(generateScramble({ type: cubetype }));
 
-        const sessionKey = `session_v2_${session}`; // Changed key to avoid conflict with old number[] format
+        const sessionKey = `session_v2_${session}`; 
         const storedData = localStorage.getItem(sessionKey);
-        
         if (storedData) {
-            try {
-                setSolves(JSON.parse(storedData));
-            } catch (e) {
-                console.error("Error parsing solves", e);
-                setSolves([]);
-            }
-        } else {
-            setSolves([]);
-        }
+            try { setSolves(JSON.parse(storedData)); } catch (e) { setSolves([]); }
+        } else { setSolves([]); }
     }, [cubetype, session, isLoaded]);
 
     // --- 3. Save Solves ---
@@ -160,19 +129,18 @@ export default function Timer() {
         localStorage.setItem(sessionKey, JSON.stringify(solves));
     }, [solves, session, isLoaded]);
 
-
     // --- Timer Functions ---
     const handleFinish = useCallback((finalTime: number) => {
         const newSolve: Solve = {
-            id: Date.now().toString(), // Simple unique ID
+            id: Date.now().toString(),
             time: finalTime,
             penalty: '',
-            scramble: scramble, // Save current scramble
-            comment: scramble,  // Default comment is the scramble
+            scramble: scramble,
+            comment: scramble,
             timestamp: Date.now()
         };
-
         setSolves(prev => [...prev, newSolve]);
+        setPrevscramble((curr)=>scramble)
         setScramble(generateScramble({ type: cubetype }));
     }, [cubetype, scramble]);
 
@@ -203,13 +171,27 @@ export default function Timer() {
     // --- Keyboard Inputs ---
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            // Disable spacebar if modal is open
+            // Disable inputs if modal is open
             if(selectedSolveId) return; 
 
+            // 1. Spacebar Logic (Timer)
             if (e.code === "Space") {
                 if(timerStateRef.current !== 'running') e.preventDefault(); 
                 if (timerStateRef.current === 'running') stopTimer();
                 else if (timerStateRef.current === 'idle') readyTimer();
+            }
+
+            // 2. SHORTCUT: Option/Alt + Z to delete last solve
+            if (e.altKey && (e.code === "KeyZ" || e.key === 'z')) {
+                e.preventDefault();
+                // Only allow deletion if timer is idle and there are solves
+                if (timerStateRef.current === 'idle' && solves.length > 0) {
+                    const lastSolve = solves[solves.length - 1];
+                    // Simple confirmation
+                    if (confirm(`Delete last solve (${formatTime(lastSolve.time, lastSolve.penalty)})?`)) {
+                        setSolves(prev => prev.slice(0, -1)); // Remove the last item
+                    }
+                }
             }
         };
 
@@ -228,7 +210,7 @@ export default function Timer() {
             window.removeEventListener("keydown", handleKeyDown);
             window.removeEventListener("keyup", handleKeyUp);
         };
-    }, [readyTimer, startTimer, stopTimer, selectedSolveId]);
+    }, [readyTimer, startTimer, stopTimer, selectedSolveId, solves]); // Added 'solves' to dependency array
 
 
     // --- Solve Management ---
@@ -248,7 +230,7 @@ export default function Timer() {
     let cube = applyScramble({ type: cubetype, scramble: scramble });
 
     return (
-        <div className="bg-[#4A70A9] min-h-screen text-white font-sans relative">
+        <div className="bg-blue-950 h-screen flex flex-col text-white font-sans relative overflow-hidden">
             
             {/* --- DETAILS MODAL --- */}
             {selectedSolveId && selectedSolve && (
@@ -302,12 +284,11 @@ export default function Timer() {
 
 
             {/* --- HEADER --- */}
-            <div className="border-b border-white/20 py-3 flex items-center bg-[#3b5d8f]">
-                {/* Same header as before */}
+            <div className="shrink-0 border-b border-white/20 py-1 flex items-center bg-[#3b5d8f]">
                 <div className="basis-1/5 px-4">
-                    <span className="mr-2 font-bold">Type:</span>
+                    <span className="mr-2 font-bold hidden md:inline">Type:</span>
                     <select 
-                        className="bg-[#2d4870] border border-white/30 px-2 py-1 rounded text-white outline-none" 
+                        className="bg-[#2d4870] border border-white/30 px-2 py-1 rounded text-white outline-none w-full md:w-auto" 
                         value={cubetype} 
                         onChange={(e) => setCubetype(e.target.value)}
                     >
@@ -315,9 +296,9 @@ export default function Timer() {
                     </select>
                 </div>
                 <div className="basis-4/5 px-4">
-                    <span className="mr-2 font-bold">Session:</span>
+                    <span className="mr-2 font-bold hidden md:inline">Session:</span>
                     <select 
-                        className="bg-[#2d4870] border border-white/30 px-2 py-1 rounded text-white outline-none" 
+                        className="bg-[#2d4870] border border-white/30 px-2 py-1 rounded text-white outline-none w-full md:w-auto" 
                         value={session} 
                         onChange={(e) => setSession(e.target.value)}
                     >
@@ -327,24 +308,35 @@ export default function Timer() {
             </div>
 
             {/* --- SCRAMBLE --- */}
-            <div className="py-6 text-center text-xl md:text-2xl font-mono px-4 wrap-break-word leading-relaxed min-h-[100px] flex items-center justify-center">
-                {isLoaded ? scramble : "Loading..."}
+            <div className="shrink-0 py-6 text-center font-mono px-4 wrap-break-word leading-relaxed min-h-[100px] flex items-center justify-center">
+                <div className='mx-4 text-xl md:text-3xl'> {isLoaded ? scramble : "Loading..."} </div>
+
+                <span className='text-gray-400 cursor-pointer' onClick={()=>{
+                    if (prevscramble.length > 0){
+                        setScramble(curr => prevscramble)
+                        setPrevscramble(curr => "")
+                    }
+                }}>prev/ </span>
+                <span className='text-gray-400 cursor-pointer' onClick={()=>{
+                    setPrevscramble(curr => scramble)
+                    setScramble(generateScramble({ type: cubetype }))
+                }}>next</span>
             </div>
 
             {/* --- CONTENT --- */}
-            <div className="flex flex-col md:flex-row h-[calc(100vh-200px)] border-t border-white/20">
+            <div className="flex-1 flex flex-row min-h-0 border-t border-white/20">
                 
                 {/* LEFT: Clickable Time List */}
                 <div className="basis-1/6 border-r border-white/20 overflow-y-auto bg-[#3b5d8f]/50 text-sm">
-                    <div className="p-2 text-center font-bold bg-[#2d4870] sticky top-0 z-10">Solves ({solves.length})</div>
+                    <div className="p-2 text-center font-bold bg-[#2d4870] sticky top-0 z-10">Solves</div>
                     <div className="flex flex-col-reverse p-2">
                         {solves.map((s, i) => (
                             <div 
                                 key={s.id} 
                                 onClick={() => setSelectedSolveId(s.id)}
-                                className={`flex justify-between px-2 py-1 hover:bg-white/20 rounded cursor-pointer ${s.penalty === 'DNF' ? 'text-red-300' : ''}`}
+                                className={`flex justify-between px-1 md:px-2 py-1 hover:bg-white/20 rounded cursor-pointer ${s.penalty === 'DNF' ? 'text-red-300' : ''}`}
                             >
-                                <span className="text-white/60 w-8">{i + 1}.</span>
+                                <span className="text-white/60 w-6 md:w-8">{i + 1}.</span>
                                 <span className="font-mono">{formatTime(s.time, s.penalty)}</span>
                             </div>
                         ))}
@@ -352,8 +344,8 @@ export default function Timer() {
                 </div>
 
                 {/* MIDDLE: Timer Display */}
-                <div className="basis-4/6 border-r border-white/20 flex flex-col justify-center items-center relative">
-                    <div className={`text-[120px] font-mono font-bold select-none tabular-nums ${timerState === 'ready' ? 'text-green-400' : 'text-white'}`}>
+                <div className="basis-4/6 border-r border-white/20 flex flex-col justify-center items-center relative overflow-hidden">
+                    <div className={`text-6xl md:text-[120px] font-mono font-bold select-none tabular-nums ${timerState === 'ready' ? 'text-green-400' : 'text-white'}`}>
                         {formatTime(timeDisplay)}
                     </div>
                     <div className="text-white/50 mt-4 text-lg">
@@ -364,8 +356,8 @@ export default function Timer() {
                 </div>
 
                 {/* RIGHT: Stats and Cube display */}
-                <div className="basis-1/6 overflow-y-auto bg-[#3b5d8f]/50 p-4 text-sm font-mono">
-                    <h3 className="text-center font-bold mb-4 border-b border-white/20 pb-2">Session Stats</h3>
+                <div className="basis-1/6 overflow-y-auto bg-[#3b5d8f]/50 p-2 md:p-4 text-xs md:text-sm font-mono">
+                    <h3 className="text-center font-bold mb-4 border-b border-white/20 pb-2">Stats</h3>
                     
                     <StatRow label="Best" value={stats.best} />
                     <StatRow label="Ao5" value={stats.ao5} />
@@ -376,25 +368,21 @@ export default function Timer() {
                     <div className="my-4 border-t border-white/20"></div>
                     
                     <StatRow label="Mean" value={stats.mean} />
-                    <StatRow label="Std Dev" value={stats.stdDev} />
+                    <StatRow label="SD" value={stats.stdDev} />
                     
                     <div className="mt-8 text-center">
                         <button 
                             onClick={() => { if(confirm("Clear this session?")) setSolves([]); }}
-                            className="bg-red-500/80 hover:bg-red-600 text-white px-3 py-1 rounded text-xs transition"
+                            className="bg-red-500/80 hover:bg-red-600 text-white px-2 py-1 rounded text-[10px] md:text-xs transition"
                         >
-                            Reset Session
+                            Reset
                         </button>
                     </div>
 
-                    {/* Cube Display */}
-                    <div className='my-8 bg-white'>
-                        <Cube2d cube={cube}  />
+                    <div className='my-8 bg-white hidden md:block'>
+                        <button className='text-gray-400 text-center w-full' onClick={()=>{ setCheckState((prev)=> !prev) }}>State</button>
+                        {checkState && <Cube2d cube={cube}  />}
                     </div>
-                </div>
-
-                <div>
-
                 </div>
 
             </div>
@@ -406,7 +394,7 @@ export default function Timer() {
 function StatRow({ label, value }: { label: string, value: number }) {
     if (value === 0 && label !== "Best") return null; 
     return (
-        <div className="flex justify-between mb-2">
+        <div className="flex flex-col xl:flex-row justify-between mb-2">
             <span className="text-white/70">{label}:</span>
             <span className="font-bold">{value === 0 && label === 'Best' ? '-' : formatTime(value)}</span>
         </div>
