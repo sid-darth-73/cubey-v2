@@ -6,7 +6,7 @@ export default function Home() {
   return (
     <div >
       {/* top naviagation for join and signup */}
-      {/* <div className="min-h-12 bg-[#222222] flex"> 
+      <div className="min-h-12 bg-[#222222] flex"> 
           <nav className="w-full px-6 py-4 bg-[#222222] text-white">
             <div className="flex items-center justify-end">
 
@@ -16,7 +16,7 @@ export default function Home() {
               </ul>
             </div>
           </nav>
-      </div> */}
+      </div>
 
       {/* Timer */}
       <div className="h-screen bg-[#4A70A9]">

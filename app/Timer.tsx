@@ -8,10 +8,12 @@ import Cube2d from '../utils/Cube2d'
 type TimerState = 'idle' | 'ready' | 'running';
 type Penalty = '' | '+2' | 'DNF';
 type MobileView = 'timer' | 'solves' | 'stats';
+type cubeType = '2x2' | '3x3' | '4x4' | '5x5' | '6x6' | '7x7'
 
 interface Solve {
     id: string;
     time: number;
+    type: string;
     penalty: Penalty;
     scramble: string;
     comment: string;
@@ -132,6 +134,7 @@ export default function Timer() {
         const newSolve: Solve = {
             id: Date.now().toString(),
             time: finalTime,
+            type: cubetype,
             penalty: '',
             scramble: scramble,
             comment: scramble,
