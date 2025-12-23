@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { generateScramble, applyScramble } from 'react-rubiks-cube-utils';
 import Cube2d from '../utils/Cube2d'
 
@@ -8,7 +8,6 @@ import Cube2d from '../utils/Cube2d'
 type TimerState = 'idle' | 'ready' | 'running';
 type Penalty = '' | '+2' | 'DNF';
 type MobileView = 'timer' | 'solves' | 'stats';
-type cubeType = '2x2' | '3x3' | '4x4' | '5x5' | '6x6' | '7x7'
 
 interface Solve {
     id: string;
@@ -20,9 +19,14 @@ interface Solve {
     timestamp: number;
 }
 
+// --- Configuration ---
+const BATCH_SIZES = [5, 12, 25, 50, 100, 200, 500, 1000];
+
 // --- Helper: Format ms to mm:ss.cc ---
 const formatTime = (ms: number, penalty: Penalty = '') => {
     if (penalty === 'DNF') return 'DNF';
+    if (ms === Infinity || ms === 0) return '-';
+    
     const finalTime = penalty === '+2' ? ms + 2000 : ms;
 
     const s = Math.floor(finalTime / 1000);
@@ -37,35 +41,31 @@ const formatTime = (ms: number, penalty: Penalty = '') => {
     return penalty === '+2' ? `${timeString}+` : timeString;
 };
 
-// --- Helper: Calculate Statistics ---
-const calculateStats = (solves: Solve[]) => {
-    const validSolves = solves.map(s => {
-        if (s.penalty === 'DNF') return Infinity;
-        if (s.penalty === '+2') return s.time + 2000;
-        return s.time;
+// --- Helper: Calculate Average (Trimmed Mean) ---
+const calculateBatchAverage = (batch: Solve[], size: number): number => {
+    if (batch.length < size) return 0;
+
+    let dnfCount = 0;
+    const times = batch.map(s => {
+        if (s.penalty === 'DNF') {
+            dnfCount++;
+            return Infinity;
+        }
+        return s.penalty === '+2' ? s.time + 2000 : s.time;
     });
 
-    const nonDnfSolves = validSolves.filter(t => t !== Infinity);
-    const best = nonDnfSolves.length > 0 ? Math.min(...nonDnfSolves) : 0;
+    const trimCount = Math.ceil(size * 0.05);
+    
+    if (dnfCount > trimCount) return -1;
 
-    const getAvg = (n: number) => {
-        if (validSolves.length < n) return 0;
-        const subset = validSolves.slice(-n);
-        const dnfCount = subset.filter(t => t === Infinity).length;
-        if (dnfCount > 1) return 0;
-        
-        subset.sort((a, b) => a - b);
-        const trimmed = subset.slice(1, -1);
-        const sum = trimmed.reduce((a, b) => a + b, 0);
-        return sum / trimmed.length;
-    };
+    times.sort((a, b) => a - b);
+    
+    const trimmed = times.slice(trimCount, times.length - trimCount);
+    
+    if (trimmed.some(t => t === Infinity)) return -1;
 
-    const sum = nonDnfSolves.reduce((a, b) => a + b, 0);
-    const mean = nonDnfSolves.length > 0 ? sum / nonDnfSolves.length : 0;
-    const variance = nonDnfSolves.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / nonDnfSolves.length;
-    const stdDev = Math.sqrt(variance || 0);
-
-    return { best, mean, stdDev, ao5: getAvg(5), ao12: getAvg(12), ao50: getAvg(50), ao100: getAvg(100) };
+    const sum = trimmed.reduce((a, b) => a + b, 0);
+    return sum / trimmed.length;
 };
 
 export default function Timer() {
@@ -80,6 +80,10 @@ export default function Timer() {
     const [timeDisplay, setTimeDisplay] = useState<number>(0);
     const [checkState, setCheckState] = useState<boolean>(false);
     
+    // --- Typing Mode State ---
+    const [isTypingMode, setIsTypingMode] = useState<boolean>(false);
+    const [manualInput, setManualInput] = useState<string>("");
+    
     // --- Layout State ---
     const [mobileView, setMobileView] = useState<MobileView>('timer');
 
@@ -89,17 +93,21 @@ export default function Timer() {
 
     // --- Modal State ---
     const [selectedSolveId, setSelectedSolveId] = useState<string | null>(null);
+    
+    // --- Stats Display State ---
+    const [showMeanMedian, setShowMeanMedian] = useState<boolean>(true);
 
     // Refs
     const timerStateRef = useRef<TimerState>('idle');
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
     const startTimeRef = useRef<number>(0);
     const solvesRef = useRef(solves);
+    const inputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => { solvesRef.current = solves; }, [solves]);
     useEffect(() => { timerStateRef.current = timerState; }, [timerState]);
 
-    // --- 1. Load Data ---
+    // --- Load/Sync Data ---
     useEffect(() => {
         const savedType = localStorage.getItem("cubetype");
         const savedSession = localStorage.getItem("session");
@@ -108,7 +116,6 @@ export default function Timer() {
         setIsLoaded(true);
     }, []);
 
-    // --- 2. Sync Session Data ---
     useEffect(() => {
         if (!isLoaded) return;
         localStorage.setItem("cubetype", cubetype);
@@ -122,14 +129,65 @@ export default function Timer() {
         } else { setSolves([]); }
     }, [cubetype, session, isLoaded]);
 
-    // --- 3. Save Solves ---
     useEffect(() => {
         if (!isLoaded) return;
         const sessionKey = `session_v2_${session}`;
         localStorage.setItem(sessionKey, JSON.stringify(solves));
     }, [solves, session, isLoaded]);
 
-    // --- Timer Functions ---
+    useEffect(() => {
+        if (isTypingMode && inputRef.current) {
+            inputRef.current.focus();
+        }
+    }, [isTypingMode, solves]);
+
+    // --- Stats Calculation Engine ---
+    const stats = useMemo(() => {
+        const validSolves = solves.map(s => {
+            if (s.penalty === 'DNF') return Infinity;
+            if (s.penalty === '+2') return s.time + 2000;
+            return s.time;
+        });
+        const nonDnfSolves = validSolves.filter(t => t !== Infinity);
+        const best = nonDnfSolves.length > 0 ? Math.min(...nonDnfSolves) : 0;
+        const sum = nonDnfSolves.reduce((a, b) => a + b, 0);
+        const mean = nonDnfSolves.length > 0 ? sum / nonDnfSolves.length : 0;
+        const variance = nonDnfSolves.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / nonDnfSolves.length;
+        const stdDev = Math.sqrt(variance || 0);
+        
+        let median = 0;
+        if (nonDnfSolves.length > 0) {
+            const sorted = [...nonDnfSolves].sort((a, b) => a - b);
+            const mid = Math.floor(sorted.length / 2);
+            median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+        }
+
+        const calculatedAverages: Record<number, { current: number | string, best: number | string }> = {};
+
+        BATCH_SIZES.forEach(size => {
+            const currentAvg = calculateBatchAverage(solves.slice(-size), size);
+            
+            let bestAvg = Infinity;
+            if (solves.length >= size) {
+                for (let i = 0; i <= solves.length - size; i++) {
+                    const window = solves.slice(i, i + size);
+                    const avg = calculateBatchAverage(window, size);
+                    if (avg !== -1 && avg < bestAvg) {
+                        bestAvg = avg;
+                    }
+                }
+            }
+
+            calculatedAverages[size] = {
+                current: currentAvg === -1 ? 'DNF' : currentAvg,
+                best: bestAvg === Infinity ? 0 : bestAvg
+            };
+        });
+
+        return { best, mean, median, stdDev, averages: calculatedAverages };
+    }, [solves]);
+
+    // --- Actions ---
     const handleFinish = useCallback((finalTime: number) => {
         const newSolve: Solve = {
             id: Date.now().toString(),
@@ -137,11 +195,11 @@ export default function Timer() {
             type: cubetype,
             penalty: '',
             scramble: scramble,
-            comment: scramble,
+            comment: '',
             timestamp: Date.now()
         };
         setSolves(prev => [...prev, newSolve]);
-        setPrevscramble((curr)=>scramble)
+        setPrevscramble(()=>scramble);
         setScramble(generateScramble({ type: cubetype }));
     }, [cubetype, scramble]);
 
@@ -171,10 +229,20 @@ export default function Timer() {
         setMobileView('timer');
     }, []);
 
-    // --- Keyboard Inputs ---
+    const handleManualSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter') {
+            const rawVal = manualInput.replace(/[^0-9]/g, ''); 
+            if (!rawVal) return;
+            const ms = parseInt(rawVal, 10) * 10;
+            handleFinish(ms);
+            setManualInput("");
+        }
+    };
+
+    // --- Inputs Handling ---
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if(selectedSolveId) return; 
+            if(selectedSolveId || isTypingMode) return; 
 
             if (e.code === "Space") {
                 if(timerStateRef.current !== 'running') e.preventDefault(); 
@@ -190,8 +258,7 @@ export default function Timer() {
             if (e.altKey && (e.code === "KeyZ" || e.key === 'z')) {
                 e.preventDefault();
                 if (timerStateRef.current === 'idle' && solves.length > 0) {
-                    const lastSolve = solves[solves.length - 1];
-                    if (confirm(`Delete last solve (${formatTime(lastSolve.time, lastSolve.penalty)})?`)) {
+                    if (confirm(`Delete last solve?`)) {
                         setSolves(prev => prev.slice(0, -1));
                     }
                 }
@@ -199,7 +266,7 @@ export default function Timer() {
         };
 
         const handleKeyUp = (e: KeyboardEvent) => {
-            if(selectedSolveId) return;
+            if(selectedSolveId || isTypingMode) return;
             if (e.code === "Space") {
                 if (timerStateRef.current === 'ready') startTimer();
                 else if (timerStateRef.current === 'idle') setTimerState('idle');
@@ -212,34 +279,28 @@ export default function Timer() {
             window.removeEventListener("keydown", handleKeyDown);
             window.removeEventListener("keyup", handleKeyUp);
         };
-    }, [readyTimer, startTimer, stopTimer, selectedSolveId, solves]);
+    }, [readyTimer, startTimer, stopTimer, selectedSolveId, solves, isTypingMode]);
 
-    // --- Pointer Events (Corrected for strict mobile/touch logic) ---
     const handlePointerDown = useCallback((e: React.PointerEvent) => {
-        if (selectedSolveId) return;
+        if (selectedSolveId || isTypingMode) return;
         if (mobileView !== 'timer') return;
-        
-        // STRICTLY MOBILE TOUCH ONLY. Ignore Mouse/Trackpad.
         if (e.pointerType !== 'touch') return;
 
         if (timerStateRef.current !== 'running') e.preventDefault();
-        
         if (timerStateRef.current === 'running') stopTimer();
         else if (timerStateRef.current === 'idle') readyTimer();
-    }, [selectedSolveId, readyTimer, stopTimer, mobileView]);
+    }, [selectedSolveId, readyTimer, stopTimer, mobileView, isTypingMode]);
 
     const handlePointerUp = useCallback((e: React.PointerEvent) => {
-        if (selectedSolveId) return;
+        if (selectedSolveId || isTypingMode) return;
         if (mobileView !== 'timer') return;
-
-        // STRICTLY MOBILE TOUCH ONLY.
         if (e.pointerType !== 'touch') return;
 
         if (timerStateRef.current === 'ready') startTimer();
         else if (timerStateRef.current === 'idle') setTimerState('idle');
-    }, [selectedSolveId, startTimer, mobileView]);
+    }, [selectedSolveId, startTimer, mobileView, isTypingMode]);
 
-    // --- Solve Management ---
+    // --- Sub-functions ---
     const updateSolve = (id: string, updates: Partial<Solve>) => {
         setSolves(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
     };
@@ -251,79 +312,69 @@ export default function Timer() {
         }
     };
 
-    const stats = calculateStats(solves);
     const selectedSolve = solves.find(s => s.id === selectedSolveId);
-    let cube = applyScramble({ type: cubetype, scramble: scramble });
-
-    // Dim UI when timer is active
+    const cube = applyScramble({ type: cubetype, scramble: scramble });
     const dimUI = timerState === 'ready' || timerState === 'running' ? 'opacity-30 pointer-events-none' : '';
 
     return (
-        <div className="bg-blue-950 h-dvh flex flex-col text-white font-sans relative overflow-hidden">
+        <div className="bg-black h-dvh flex flex-col text-white font-sans relative overflow-hidden">
             
             {/* --- DETAILS MODAL --- */}
             {selectedSolveId && selectedSolve && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="bg-[#2d4870] border border-white/20 p-6 rounded-lg w-full max-w-md shadow-2xl flex flex-col gap-4">
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                    <div className="bg-zinc-900 border border-white/20 p-6 rounded-lg w-full max-w-md shadow-2xl flex flex-col gap-4">
                         <div className="flex justify-between items-center border-b border-white/10 pb-2">
                              <h2 className="text-4xl font-mono font-bold">
                                 {formatTime(selectedSolve.time, selectedSolve.penalty)}
                             </h2>
                             <button onClick={() => setSelectedSolveId(null)} className="p-2 hover:bg-white/10 rounded">✕</button>
                         </div>
-                       
                         <div className="text-white/60 font-mono text-sm bg-black/20 p-2 rounded wrap-break-word">
                             {selectedSolve.scramble}
                         </div>
-
                         <div className="flex justify-center gap-3">
                             <button 
                                 onClick={() => updateSolve(selectedSolve.id, { penalty: selectedSolve.penalty === '+2' ? '' : '+2' })}
                                 className={`flex-1 py-3 rounded border text-lg font-bold transition-colors ${selectedSolve.penalty === '+2' ? 'bg-yellow-600 border-yellow-400' : 'border-white/20 hover:bg-white/10'}`}
-                            >
-                                +2
-                            </button>
+                            >+2</button>
                             <button 
                                 onClick={() => updateSolve(selectedSolve.id, { penalty: selectedSolve.penalty === 'DNF' ? '' : 'DNF' })}
                                 className={`flex-1 py-3 rounded border text-lg font-bold transition-colors ${selectedSolve.penalty === 'DNF' ? 'bg-red-600 border-red-400' : 'border-white/20 hover:bg-white/10'}`}
-                            >
-                                DNF
-                            </button>
+                            >DNF</button>
                             <button 
                                 onClick={() => deleteSolve(selectedSolve.id)}
                                 className="flex-1 py-3 rounded border border-red-500/50 text-red-300 hover:bg-red-500/20"
-                            >
-                                Del
-                            </button>
+                            >Del</button>
                         </div>
-
-                        <div>
-                            <label className="block text-sm text-white/60 mb-1">Comment</label>
-                            <textarea 
-                                className="w-full bg-[#1e3454] border border-white/20 rounded p-2 text-sm font-mono h-20 focus:border-blue-400 outline-none"
-                                value={selectedSolve.comment}
-                                onChange={(e) => updateSolve(selectedSolve.id, { comment: e.target.value })}
-                            />
-                        </div>
+                        <textarea 
+                            className="w-full bg-zinc-800 border border-white/20 rounded p-2 text-sm font-mono h-20 focus:border-blue-400 outline-none"
+                            value={selectedSolve.comment}
+                            onChange={(e) => updateSolve(selectedSolve.id, { comment: e.target.value })}
+                        />
                     </div>
                 </div>
             )}
 
-            {/* --- HEADER (Nav Bar) --- */}
-            <div className={`shrink-0 border-b border-white/20 py-1 flex items-center justify-between bg-[#3b5d8f] transition-opacity duration-200 ${dimUI}`}>
+            {/* --- HEADER --- */}
+            <div className={`shrink-0 border-b border-white/20 py-1 flex items-center justify-between bg-zinc-900 transition-opacity duration-200 ${dimUI}`}>
                 <div className="flex-1 px-2">
                     <select 
-                        className="bg-[#2d4870] border border-white/30 px-3 py-1.5 rounded text-white outline-none text-sm font-bold w-full md:w-auto" 
+                        className="bg-zinc-800 border border-white/30 px-3 py-1.5 rounded text-white outline-none text-sm font-bold" 
                         value={cubetype} 
                         onChange={(e) => setCubetype(e.target.value)}
                     >
                         {['3x3','2x2','4x4','5x5','6x6','7x7'].map(t => <option key={t} value={t}>{t}</option>)}
                     </select>
                 </div>
-                
-                <div className="flex-1 px-2 flex justify-end">
+                <div className="flex-1 px-2 flex justify-end gap-2">
+                    <button 
+                        onClick={() => setIsTypingMode(!isTypingMode)}
+                        className={`px-3 py-1.5 rounded border ${isTypingMode ? 'bg-green-600 border-green-400' : 'bg-zinc-800 border-white/30'} text-sm font-bold transition-colors`}
+                    >
+                        {isTypingMode ? "⌨️ Input" : "⏱ Timer"}
+                    </button>
                     <select 
-                        className="bg-[#2d4870] border border-white/30 px-3 py-1.5 rounded text-white outline-none text-sm font-bold w-full md:w-auto" 
+                        className="bg-zinc-800 border border-white/30 px-3 py-1.5 rounded text-white outline-none text-sm font-bold" 
                         value={session} 
                         onChange={(e) => setSession(e.target.value)}
                     >
@@ -341,31 +392,28 @@ export default function Timer() {
                     <div className="flex gap-4 mt-2 opacity-50 hover:opacity-100 transition-opacity">
                         <button className='text-xs uppercase tracking-widest hover:text-white hover:underline' onClick={()=>{
                             if (prevscramble.length > 0){
-                                setScramble(curr => prevscramble)
-                                setPrevscramble(curr => "")
+                                setScramble(() => prevscramble)
+                                setPrevscramble(() => "")
                             }
                         }}>Prev</button>
-                        
                         <button className='text-xs uppercase tracking-widest hover:text-white hover:underline' onClick={()=>{
-                            setPrevscramble(curr => scramble)
+                            setPrevscramble(() => scramble)
                             setScramble(generateScramble({ type: cubetype }))
                         }}>Next</button>
                     </div>
                 </div>
             </div>
 
-            {/* --- MAIN CONTENT AREA --- */}
+            {/* --- MAIN AREA --- */}
             <div className="flex-1 flex flex-col md:flex-row min-h-0 border-t border-white/20 relative">
                 
-                {/* LEFT: SOLVES LIST */}
+                {/* LIST */}
                 <div className={`
-                    bg-[#3b5d8f]/30 md:bg-[#3b5d8f]/50 
-                    md:basis-1/6 md:border-r border-white/20 
-                    flex flex-col
+                    bg-zinc-900/90 md:bg-zinc-900 md:basis-1/6 md:border-r border-white/20 flex flex-col
                     ${mobileView === 'solves' ? 'flex h-full absolute inset-0 z-20 md:static' : 'hidden md:flex'}
                     ${dimUI}
                 `}>
-                    <div className="p-3 text-center font-bold bg-[#2d4870] sticky top-0 z-10 shadow-md">
+                    <div className="p-3 text-center font-bold bg-zinc-800 sticky top-0 z-10 shadow-md">
                         Solves ({solves.length})
                     </div>
                     <div className="flex-1 overflow-y-auto p-2 scrollbar-thin">
@@ -384,7 +432,7 @@ export default function Timer() {
                     </div>
                 </div>
 
-                {/* MIDDLE: TIMER */}
+                {/* TIMER / INPUT */}
                 <div
                     className={`
                         md:basis-4/6 flex flex-col justify-center items-center relative overflow-hidden select-none
@@ -395,102 +443,124 @@ export default function Timer() {
                     onPointerCancel={handlePointerUp}
                     style={{ touchAction: 'none' }}
                 >
-
-                    <div className={`
-                        font-mono font-bold tabular-nums transition-colors duration-100
-                        text-[22vw] md:text-[120px] 
-                        ${timerState === 'ready' ? 'text-green-400' : 'text-white'}
-                        ${timerState === 'running' ? '' : 'drop-shadow-lg'}
-                    `}>
-                        {formatTime(timeDisplay)}
-                    </div>
-                    <div>Ao5: {stats.ao5 == 0 ? "" : formatTime(stats.ao5)}</div>
-                    <div>Ao12: {stats.ao12 == 0 ? "" : formatTime(stats.ao12)}</div>
+                    {isTypingMode ? (
+                        <div className="flex flex-col items-center w-full max-w-2xl px-8">
+                            <input
+                                ref={inputRef}
+                                type="number"
+                                pattern="[0-9]*"
+                                value={manualInput}
+                                onChange={(e) => setManualInput(e.target.value)}
+                                onKeyDown={handleManualSubmit}
+                                className="bg-transparent text-center text-7xl md:text-9xl font-mono text-white outline-none caret-blue-400 w-full"
+                            />
+                        </div>
+                    ) : (
+                        <>
+                            <div className={`
+                                font-mono font-bold tabular-nums transition-colors duration-100
+                                text-[22vw] md:text-[120px] 
+                                ${timerState === 'ready' ? 'text-green-400' : 'text-white'}
+                                ${timerState === 'running' ? '' : 'drop-shadow-lg'}
+                            `}>
+                                {formatTime(timeDisplay)}
+                            </div>
+                            <div className="text-white/60 font-mono text-lg flex gap-6 mt-4">
+                                <span>Ao5: {formatTime(stats.averages[5].current as number)}</span>
+                                <span>Ao12: {formatTime(stats.averages[12].current as number)}</span>
+                            </div>
+                        </>
+                    )}
                 </div>
 
-                {/* RIGHT: STATS */}
+                {/* STATS */}
                 <div className={`
-                    bg-[#3b5d8f]/30 md:bg-[#3b5d8f]/50 
-                    md:basis-1/6 md:border-l border-white/20 
-                    overflow-y-auto p-6 md:p-4 text-sm font-mono
+                    bg-zinc-900/90 md:bg-zinc-900 md:basis-1/6 md:border-l border-white/20 
+                    overflow-y-auto p-4 text-sm font-mono
                     ${mobileView === 'stats' ? 'block h-full absolute inset-0 z-20 md:static' : 'hidden md:block'}
                     ${dimUI}
                 `}>
-                    <h3 className="text-center font-bold mb-6 md:mb-4 border-b border-white/20 pb-2 text-xl md:text-base">Session Stats</h3>
+                    <h3 className="text-center font-bold mb-4 border-b border-white/20 pb-2">Session Stats</h3>
                     
-                    <div className="space-y-3 md:space-y-2">
-                        <StatRow label="Ao5" value={stats.ao5} />
-                        <StatRow label="Ao12" value={stats.ao12} />
-                        <StatRow label="Ao50" value={stats.ao50} />
-                        <StatRow label="Ao100" value={stats.ao100} />
-                        <StatRow label="Best" value={stats.best} />
-                        <div className="border-t border-white/10 my-2"></div>
-                        <StatRow label="Mean" value={stats.mean} />
-                        <StatRow label="SD" value={stats.stdDev} />
+                    {/* General Stats */}
+                    <div className="grid grid-cols-2 gap-x-2 gap-y-1 mb-4">
+                        <span className="text-white/60">Solves</span>
+                        <span className="font-bold text-right">{solves.length}</span>
+                        {showMeanMedian && (
+                            <>
+                                <span className="text-white/60">Mean</span>
+                                <span className="font-bold text-right">{formatTime(stats.mean)}</span>
+                                <span className="text-white/60">Median</span>
+                                <span className="font-bold text-right">{formatTime(stats.median)}</span>
+                            </>
+                        )}
+                        <span className="text-white/60">Best</span>
+                        <span className="font-bold text-right">{formatTime(stats.best)}</span>
+                        <span className="text-white/60">Std Dev</span>
+                        <span className="font-bold text-right">{formatTime(stats.stdDev)}</span>
+                    </div>
+
+                    <div className="flex justify-center mb-4">
+                        <button 
+                            onClick={() => setShowMeanMedian(!showMeanMedian)}
+                            className="text-xs uppercase tracking-widest text-white/60 hover:text-white hover:underline transition-colors"
+                        >
+                            {showMeanMedian ? 'Hide' : 'Show'} Mean/Median
+                        </button>
+                    </div>
+
+                    <div className="border-t border-white/10 my-4"></div>
+
+                    {/* Averages Grid */}
+                    <div className="grid grid-cols-[1fr_1fr_1fr] gap-y-2 gap-x-2 items-center text-xs md:text-xs">
+                        <div className="text-white/40 uppercase tracking-wider font-bold">Type</div>
+                        <div className="text-white/40 uppercase tracking-wider font-bold text-right">Cur</div>
+                        <div className="text-yellow-500/60 uppercase tracking-wider font-bold text-right">Best</div>
+
+                        {BATCH_SIZES.map(size => {
+                            const data = stats.averages[size];
+                            if (!data) return null;
+
+                            return (
+                                <Fragment key={size}>
+                                    <div className="font-bold text-white/80">Ao{size}</div>
+                                    <div className="text-right font-mono">{formatTime(data.current as number)}</div>
+                                    <div className="text-right font-mono text-yellow-300">{formatTime(data.best as number)}</div>
+                                </Fragment>
+                            )
+                        })}
                     </div>
                     
                     <div className="mt-8 text-center">
                         <button 
                             onClick={() => { if(confirm("Clear this session?")) setSolves([]); }}
-                            className="w-full bg-red-500/20 hover:bg-red-600 border border-red-500/50 text-red-200 px-4 py-3 md:py-2 rounded text-xs uppercase tracking-widest transition cursor-pointer"
-                        >
-                            Reset Session
-                        </button>
+                            className="w-full bg-red-500/20 hover:bg-red-600 border border-red-500/50 text-red-200 px-4 py-2 rounded text-xs uppercase tracking-widest transition"
+                        >Reset Session</button>
                     </div>
 
-                    {/* Cube Display */}
                     <div className='my-8 bg-white/5 rounded p-2'>
                         <button 
                             className='text-white/50 hover:text-white text-center w-full text-xs cursor-pointer md:block hidden' 
                             onClick={()=>{ setCheckState((prev)=> !prev) }}
-                        >
-                            {checkState ? "Hide Cube State" : "Show Cube State"}
-                        </button>
-                        {/* Always show cube on mobile stats tab, toggle on desktop */}
+                        >{checkState ? "Hide Cube" : "Show Cube"}</button>
                         <div className={`mt-2 flex justify-center ${!checkState ? 'md:hidden block' : ''}`}>
                             <Cube2d cube={cube} />
                         </div>
                     </div>
                 </div>
-
             </div>
 
-            {/* --- MOBILE BOTTOM NAVIGATION --- */}
-            {/* Hidden on desktop. Hidden when timer is running. */}
-            <div className={`md:hidden flex shrink-0 bg-[#2d4870] border-t border-white/20 pb-safe ${timerState === 'running' ? 'hidden' : ''}`}>
-                <NavButton 
-                    active={mobileView === 'solves'} 
-                    onClick={() => setMobileView('solves')} 
-                    label="Solves" 
-                    count={solves.length}
-                />
-                <NavButton 
-                    active={mobileView === 'timer'} 
-                    onClick={() => setMobileView('timer')} 
-                    label="Timer" 
-                    icon={true}
-                />
-                <NavButton 
-                    active={mobileView === 'stats'} 
-                    onClick={() => setMobileView('stats')} 
-                    label="Stats" 
-                />
+            {/* MOBILE NAV */}
+            <div className={`md:hidden flex shrink-0 bg-zinc-900 border-t border-white/20 pb-safe ${timerState === 'running' ? 'hidden' : ''}`}>
+                <NavButton active={mobileView === 'solves'} onClick={() => setMobileView('solves')} label="Solves" count={solves.length} />
+                <NavButton active={mobileView === 'timer'} onClick={() => setMobileView('timer')} label={isTypingMode ? "Input" : "Timer"} icon={true} />
+                <NavButton active={mobileView === 'stats'} onClick={() => setMobileView('stats')} label="Stats" />
             </div>
         </div>
     )
 }
 
-// --- Subcomponents ---
-
-function StatRow({ label, value }: { label: string, value: number }) {
-    if (value === 0 && label !== "Best") return null; 
-    return (
-        <div className="flex justify-between items-end">
-            <span className="text-white/60 text-xs uppercase tracking-wide">{label}</span>
-            <span className="font-bold text-xl md:text-base">{value === 0 && label === 'Best' ? '-' : formatTime(value)}</span>
-        </div>
-    );
-}
+const { Fragment } = require('react');
 
 function NavButton({ active, onClick, label, icon, count }: { active: boolean, onClick: () => void, label: string, icon?: boolean, count?: number }) {
     return (
@@ -499,7 +569,7 @@ function NavButton({ active, onClick, label, icon, count }: { active: boolean, o
             className={`flex-1 py-4 flex flex-col items-center justify-center relative transition-colors ${active ? 'bg-white/10 text-white' : 'text-white/40 hover:bg-white/5'}`}
         >
             {icon ? (
-                <div className="mb-1 text-2xl">⏱</div>
+                <div className="mb-1 text-2xl">{label === 'Input' ? '⌨️' : '⏱'}</div>
             ) : (
                 <span className="text-lg font-bold mb-0.5">{label}</span>
             )}
