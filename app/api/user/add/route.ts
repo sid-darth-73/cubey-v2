@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
         `;
         
         // result is an array: [{ id: 1 }]
-        return NextResponse.json({ success: true, dbId: result[0].id });
+        return NextResponse.json({ success: true, cuber_id: result[0].id });
 
     } catch (error) {
         console.error("Database Error:", error);

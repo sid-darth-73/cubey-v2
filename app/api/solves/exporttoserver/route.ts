@@ -1,6 +1,7 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 import postgres from 'postgres';
+import { Solve } from '@/types/SolveType';
 
 const sql = postgres({
   host: process.env.PGHOST,
@@ -11,15 +12,6 @@ const sql = postgres({
   ssl: 'require',
 });
 
-type IncomingSolve = {
-    solve_id: string; 
-    time_ms: number;
-    cube_type: string;
-    penalty: string | null;
-    scramble: string;
-    comment: string | null;
-    solved_at: string; 
-};
 
 export async function POST(req: Request) {
     try {
@@ -34,7 +26,7 @@ export async function POST(req: Request) {
             return NextResponse.json({ message: "No solves to sync" }, { status: 200 });
         }
         
-        const solves = body as IncomingSolve[];
+        const solves = body as Solve[];
 
         const cuberResult = await sql`
             SELECT id FROM cuber WHERE clerk_id = ${userId} LIMIT 1
@@ -55,13 +47,13 @@ export async function POST(req: Request) {
         // We map the incoming JSON to the exact column names expected by Postgres.js
         const cleanData = solves.map((s) => ({
             cuber_id: cuberId,
-            time: s.time_ms,         
-            type: s.cube_type,
+            time: s.time,         
+            type: s.type,
             scramble: s.scramble,
             penalty: s.penalty || "", 
             comment: s.comment || "",
-            session_id: 1,            // DEFAULTED: Schema requires it, but frontend se abhi test ke liye 1 hi bheja hai
-            created_at: s.solved_at  
+            session_id: s.session,            // DEFAULTED: Schema requires it, but frontend se abhi test ke liye 1 hi bheja hai
+            created_at: s.timestamp
         }));
 
         // 6. Bulk Insert

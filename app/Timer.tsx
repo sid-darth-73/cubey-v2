@@ -3,21 +3,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { generateScramble, applyScramble } from 'react-rubiks-cube-utils';
 import Cube2d from '../utils/Cube2d'
-
+import { Solve } from '@/types/SolveType';
 // --- Types ---
 type TimerState = 'idle' | 'ready' | 'running';
 type Penalty = '' | '+2' | 'DNF';
 type MobileView = 'timer' | 'solves' | 'stats';
 
-interface Solve {
-    id: string;
-    time: number;
-    type: string;
-    penalty: Penalty;
-    scramble: string;
-    comment: string;
-    timestamp: number;
-}
+
 
 // --- Configuration ---
 const BATCH_SIZES = [5, 12, 25, 50, 100, 200, 500, 1000];
@@ -196,7 +188,8 @@ export default function Timer() {
             penalty: '',
             scramble: scramble,
             comment: '',
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            session: session
         };
         setSolves(prev => [...prev, newSolve]);
         setPrevscramble(()=>scramble);
