@@ -1,7 +1,31 @@
+"use client"
 import Image from "next/image";
 import Link from "next/link";
 import Timer from "./Timer";
+import { Solve } from "@/types/SolveType";
 
+// async function handleJoin() {
+//   let solves: Solve[] = [];
+//   for(let i = 1; i <= 10; i++) {
+//     if(!localStorage.getItem(`session_v2_${i}`)) {
+//       continue
+//     }
+//     //@ts-ignore
+//     const solves_in_session_i = JSON.parse(localStorage.getItem(`session_v2_${i}`));
+//     for(const solve in solves_in_session_i) {
+//       //@ts-ignore
+//       solves += solve
+//     }
+//   }
+
+//   const response = await fetch('/api/solves/exporttoserver', {
+//     method: 'POST', 
+//     headers: {
+//       'Content-Type': 'application/json'
+//     },
+//     body: JSON.stringify(solves)
+//   });
+// }
 export default function Home() {
   return (
     <div >
@@ -11,7 +35,14 @@ export default function Home() {
             <div className="flex items-center justify-end">
 
               <ul className="flex gap-6">
-                <li><Link className="hover:text-blue-400 border m-2 px-2 py-1" href="/in/home">Join</Link></li>
+                <li>
+                  <Link 
+                      className="hover:text-blue-400 border m-2 px-2 py-1" 
+                      href="/in/home"
+                    >
+                      Join
+                    </Link>
+              </li>
                 <li><a className="hover:text-blue-400" href="/about">Learn</a></li>
               </ul>
             </div>
@@ -25,6 +56,3 @@ export default function Home() {
     </div>
   );
 }
-export const metadata = {
-  title: "ubtimer",
-};
